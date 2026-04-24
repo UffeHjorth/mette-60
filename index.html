@@ -394,7 +394,7 @@ body.cinema .lb{height:6.5vh;}
 
 <!-- TIMELINE -->
 <div id="sc-tl">
-  <p class="tl-head" id="tl-head">Mettes liv gennem tiden</p>
+  <p class="tl-head" id="tl-head">Højdepunkter i Mettes Liv</p>
   <div class="tl-wrap">
     <div class="tl-line" id="tl-line"></div>
     <div class="tl-photos" id="tl-photos"></div>
@@ -842,20 +842,18 @@ function confirmDelete(){
   document.getElementById('confirm-toast').style.display='none';
   if(photos.length <= 1){
     goTimeline();
+    saveToCloud();  // ← cloud sync
     return;
   }
-  // Remove current photo
   photos.splice(curIdx,1);
-  // Go to adjacent photo or timeline if empty
   if(photos.length === 0){
     goTimeline();
   } else {
     const nextIdx = Math.min(curIdx, photos.length-1);
-    // Rebuild timeline in background
     buildTimeline();
-    // Cross-fade to adjacent photo
     crossFade(nextIdx);
   }
+  saveToCloud();  // ← cloud sync
 }
 
 // ── SAVE HTML ─────────────────────────────────
@@ -1039,11 +1037,7 @@ function addPhoto(){
   r.readAsDataURL(file);
 }
 
-// Override saveEdit + confirmDelete
-const _saveEditFB = saveEdit;
-function saveEdit(){ _saveEditFB(); setTimeout(saveToCloud,150); }
-const _deleteFB = confirmDelete;
-function confirmDelete(){ _deleteFB(); setTimeout(saveToCloud,150); }
+// saveEdit and confirmDelete already call saveToCloud() directly above
 
 </script>
 </body>
