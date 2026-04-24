@@ -959,7 +959,9 @@ function addPhoto(){
 }
 
 // ═══════════════════════════════════════════
-//  FIREBASE REALTIME SYNC
+//  FIREBASE + LOCALSTORAGE DUAL SAVE
+//  Firebase = delt med makker
+//  localStorage = backup så intet mistes
 // ═══════════════════════════════════════════
 const firebaseConfig = {
   apiKey:            "AIzaSyCMe-WryRP0aMKk11u_qD6iM06ZMFDS5yA",
@@ -970,12 +972,13 @@ const firebaseConfig = {
   messagingSenderId: "830767316307",
   appId:             "1:830767316307:web:24d22a4593772248ebf5a6"
 };
+
 firebase.initializeApp(firebaseConfig);
 const fbdb     = firebase.database();
 const albumRef = fbdb.ref('album');
 let syncTimer  = null;
 let ignoreNext = false;
-let initialLoadDone = false;
+const LS_KEY   = 'mette60_photos';
 
 function setSyncStatus(state, label){
   const wrap = document.getElementById('sync-dot');
@@ -983,89 +986,125 @@ function setSyncStatus(state, label){
   wrap.className = state;
   wrap.style.opacity = '1';
   lbl.textContent = label;
-  if(state === 'saved') setTimeout(()=>{ wrap.style.opacity='0'; }, 2500);
+  if(state === 'saved') setTimeout(()=>{ wrap.style.opacity='0'; }, 3000);
 }
 
-// Firebase kan returnere arrays som objekter — denne funktion håndterer begge
-function parseFirebaseData(data){
-  if(!data) return null;
-  if(Array.isArray(data)) return data.filter(p => p && p.year);
-  // Firebase har gemt som objekt med numeriske nøgler
-  if(typeof data === 'object'){
-    const arr = Object.values(data).filter(p => p && p.year);
-    return arr.length > 0 ? arr : null;
-  }
-  return null;
+// Konverter Firebase-data til array (Firebase kan gemme som objekt eller array)
+function toArray(data){
+  if(!data) return [];
+  if(Array.isArray(data)) return data.filter(p => p && p.src);
+  if(typeof data === 'object') return Object.values(data).filter(p => p && p.src);
+  return [];
 }
 
+// GEM til localStorage (altid)
+function saveLocal(){
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(photos));
+  } catch(e){ console.warn('localStorage fejl:', e); }
+}
+
+// HENT fra localStorage
+function loadLocal(){
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if(!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter(p => p && p.src) : [];
+  } catch(e){ return []; }
+}
+
+// GEM til Firebase + localStorage
 function saveToCloud(){
   clearTimeout(syncTimer);
   setSyncStatus('syncing','Gemmer…');
+  saveLocal(); // gem lokalt med det samme
   syncTimer = setTimeout(()=>{
     ignoreNext = true;
-    // Gem som objekt med index-nøgler for at undgå Firebase array-konverteringsproblemer
-    const dataToSave = {};
-    photos.forEach((p, i) => { dataToSave[i] = p; });
-    albumRef.set(dataToSave)
+    // Gem som objekt for at undgå Firebase array-problemer
+    const obj = {};
+    photos.forEach((p,i) => { obj['p'+i] = p; });
+    albumRef.set(obj)
       .then(()=>{
         setSyncStatus('saved','Gemt ✓');
         setTimeout(()=>{ ignoreNext = false; }, 1500);
       })
       .catch(e=>{
-        console.error('Firebase gem fejl:', e);
-        setSyncStatus('error','Fejl ved gem');
+        console.error('Firebase fejl:', e);
+        setSyncStatus('error','Kun gemt lokalt');
         ignoreNext = false;
       });
-  }, 700);
+  }, 600);
 }
 
-function applyCloudData(data){
-  const parsed = parseFirebaseData(data);
-  if(!parsed || parsed.length === 0) return false;
-  if(JSON.stringify(parsed.map(p=>p.year)) === JSON.stringify(photos.map(p=>p.year)) &&
-     parsed.length === photos.length) return false; // ingen ændring
+// Opdater photos-array og tidslinje
+function applyPhotos(arr, source){
+  if(!arr || arr.length === 0) return false;
+  const incoming = JSON.stringify(arr.map(p=>p.year+p.caption));
+  const current  = JSON.stringify(photos.map(p=>p.year+p.caption));
+  if(incoming === current && arr.length === photos.length) return false;
   photos.length = 0;
-  parsed.forEach(p => photos.push(p));
+  arr.forEach(p => photos.push(p));
   photos.sort((a,b) => a.year - b.year);
+  saveLocal(); // hold localStorage synkroniseret
+  console.log('Photos hentet fra', source, '— antal:', photos.length);
   return true;
 }
 
-// Live listener — opdaterer når makker tilføjer noget
+// Live listener — opdaterer når makker ændrer noget
 albumRef.on('value', snap => {
   if(ignoreNext) return;
-  const changed = applyCloudData(snap.val());
-  if(changed){
-    if(scene === 'tl'){
-      buildTimeline();
-      gsap.to('.tl-item',{opacity:1, stagger:.06, duration:.4});
-    }
-    if(initialLoadDone) setSyncStatus('saved','Opdateret ✓');
+  const arr = toArray(snap.val());
+  if(arr.length === 0) return;
+  const changed = applyPhotos(arr, 'Firebase live');
+  if(changed && scene === 'tl'){
+    buildTimeline();
+    gsap.to('.tl-item',{opacity:1, stagger:.06, duration:.4});
+    setSyncStatus('saved','Opdateret ✓');
   }
-  initialLoadDone = true;
 });
 
 // Indlæs ved sidestart
 window.addEventListener('load', ()=>{
-  setSyncStatus('syncing','Henter…');
-  albumRef.once('value').then(snap => {
-    const data = snap.val();
-    const parsed = parseFirebaseData(data);
-    if(parsed && parsed.length > 0){
-      photos.length = 0;
-      parsed.forEach(p => photos.push(p));
-      photos.sort((a,b) => a.year - b.year);
-      buildTimeline();
-      if(scene === 'tl') gsap.to('.tl-item',{opacity:1,stagger:.06,duration:.5});
-      setSyncStatus('saved','Klar ✓');
-    } else {
-      // Første gang — gem de lokale billeder til cloud
-      console.log('Ingen cloud-data fundet — gemmer lokale billeder');
-      saveToCloud();
-    }
-  }).catch(e=>{
-    console.error('Firebase hent fejl:', e);
-    setSyncStatus('error','Offline — arbejder lokalt');
-  });
+  // 1. Prøv localStorage FØRST (hurtig og offline-sikker)
+  const local = loadLocal();
+  if(local.length > 0){
+    applyPhotos(local, 'localStorage');
+    setSyncStatus('syncing','Tjekker cloud…');
+  } else {
+    setSyncStatus('syncing','Henter…');
+  }
+
+  // 2. Hent fra Firebase (kan overskrive localStorage hvis nyere)
+  albumRef.once('value')
+    .then(snap => {
+      const arr = toArray(snap.val());
+      if(arr.length > 0){
+        // Brug Firebase data hvis den har FLERE billeder end lokal
+        if(arr.length >= local.length){
+          applyPhotos(arr, 'Firebase');
+          buildTimeline();
+          if(scene === 'tl') gsap.to('.tl-item',{opacity:1,stagger:.05,duration:.5});
+        }
+        setSyncStatus('saved','Klar ✓');
+      } else if(local.length > 0){
+        // Firebase er tom men vi har lokale data — gem dem op
+        console.log('Firebase tom — uploader lokale billeder');
+        saveToCloud();
+        setSyncStatus('saved','Uploadet ✓');
+      } else {
+        // Første gang — upload de hardcodede billeder
+        saveToCloud();
+      }
+    })
+    .catch(e => {
+      console.error('Firebase offline:', e);
+      if(local.length > 0){
+        setSyncStatus('error','Offline — viser lokale billeder');
+      } else {
+        setSyncStatus('error','Offline');
+      }
+    });
 });
 
 // Override addPhoto to include cloud save
