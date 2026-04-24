@@ -975,6 +975,7 @@ const fbdb     = firebase.database();
 const albumRef = fbdb.ref('album');
 let syncTimer  = null;
 let ignoreNext = false;
+let initialLoadDone = false;
 
 function setSyncStatus(state, label){
   const wrap = document.getElementById('sync-dot');
@@ -985,51 +986,86 @@ function setSyncStatus(state, label){
   if(state === 'saved') setTimeout(()=>{ wrap.style.opacity='0'; }, 2500);
 }
 
+// Firebase kan returnere arrays som objekter — denne funktion håndterer begge
+function parseFirebaseData(data){
+  if(!data) return null;
+  if(Array.isArray(data)) return data.filter(p => p && p.year);
+  // Firebase har gemt som objekt med numeriske nøgler
+  if(typeof data === 'object'){
+    const arr = Object.values(data).filter(p => p && p.year);
+    return arr.length > 0 ? arr : null;
+  }
+  return null;
+}
+
 function saveToCloud(){
   clearTimeout(syncTimer);
   setSyncStatus('syncing','Gemmer…');
   syncTimer = setTimeout(()=>{
     ignoreNext = true;
-    albumRef.set(photos)
+    // Gem som objekt med index-nøgler for at undgå Firebase array-konverteringsproblemer
+    const dataToSave = {};
+    photos.forEach((p, i) => { dataToSave[i] = p; });
+    albumRef.set(dataToSave)
       .then(()=>{
         setSyncStatus('saved','Gemt ✓');
-        setTimeout(()=>{ ignoreNext = false; }, 1200);
+        setTimeout(()=>{ ignoreNext = false; }, 1500);
       })
-      .catch(e=>{ console.error(e); setSyncStatus('error','Fejl'); ignoreNext=false; });
+      .catch(e=>{
+        console.error('Firebase gem fejl:', e);
+        setSyncStatus('error','Fejl ved gem');
+        ignoreNext = false;
+      });
   }, 700);
 }
 
-// Live listener — update view when partner makes changes
+function applyCloudData(data){
+  const parsed = parseFirebaseData(data);
+  if(!parsed || parsed.length === 0) return false;
+  if(JSON.stringify(parsed.map(p=>p.year)) === JSON.stringify(photos.map(p=>p.year)) &&
+     parsed.length === photos.length) return false; // ingen ændring
+  photos.length = 0;
+  parsed.forEach(p => photos.push(p));
+  photos.sort((a,b) => a.year - b.year);
+  return true;
+}
+
+// Live listener — opdaterer når makker tilføjer noget
 albumRef.on('value', snap => {
   if(ignoreNext) return;
-  const data = snap.val();
-  if(!data || !Array.isArray(data) || !data.length) return;
-  if(JSON.stringify(data) === JSON.stringify(photos)) return;
-  photos.length = 0;
-  data.forEach(p => photos.push(p));
-  photos.sort((a,b) => a.year - b.year);
-  if(scene === 'tl'){ buildTimeline(); gsap.to('.tl-item',{opacity:1,stagger:.06,duration:.4}); }
-  setSyncStatus('saved','Opdateret ✓');
+  const changed = applyCloudData(snap.val());
+  if(changed){
+    if(scene === 'tl'){
+      buildTimeline();
+      gsap.to('.tl-item',{opacity:1, stagger:.06, duration:.4});
+    }
+    if(initialLoadDone) setSyncStatus('saved','Opdateret ✓');
+  }
+  initialLoadDone = true;
 });
 
-// On load: fetch from cloud, or push local photos up if cloud is empty
+// Indlæs ved sidestart
 window.addEventListener('load', ()=>{
-  setTimeout(()=>{
-    setSyncStatus('syncing','Henter…');
-    albumRef.once('value').then(snap => {
-      const data = snap.val();
-      if(data && Array.isArray(data) && data.length > 0){
-        photos.length = 0;
-        data.forEach(p => photos.push(p));
-        photos.sort((a,b) => a.year - b.year);
-        buildTimeline();
-        if(scene === 'tl') gsap.to('.tl-item',{opacity:1,stagger:.06,duration:.5});
-        setSyncStatus('saved','Klar ✓');
-      } else {
-        saveToCloud(); // first run: push local photos to cloud
-      }
-    }).catch(e=>{ console.error(e); setSyncStatus('error','Offline'); });
-  }, 700);
+  setSyncStatus('syncing','Henter…');
+  albumRef.once('value').then(snap => {
+    const data = snap.val();
+    const parsed = parseFirebaseData(data);
+    if(parsed && parsed.length > 0){
+      photos.length = 0;
+      parsed.forEach(p => photos.push(p));
+      photos.sort((a,b) => a.year - b.year);
+      buildTimeline();
+      if(scene === 'tl') gsap.to('.tl-item',{opacity:1,stagger:.06,duration:.5});
+      setSyncStatus('saved','Klar ✓');
+    } else {
+      // Første gang — gem de lokale billeder til cloud
+      console.log('Ingen cloud-data fundet — gemmer lokale billeder');
+      saveToCloud();
+    }
+  }).catch(e=>{
+    console.error('Firebase hent fejl:', e);
+    setSyncStatus('error','Offline — arbejder lokalt');
+  });
 });
 
 // Override addPhoto to include cloud save
