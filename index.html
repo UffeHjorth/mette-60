@@ -840,20 +840,42 @@ function cancelDelete(){
 }
 function confirmDelete(){
   document.getElementById('confirm-toast').style.display='none';
-  if(photos.length <= 1){
-    goTimeline();
-    saveToCloud();  // ← cloud sync
+
+  // Remove from array
+  photos.splice(curIdx, 1);
+
+  if(photos.length === 0){
+    // No photos left — go back to timeline
+    hideControls();
+    gsap.killTweensOf('#photo-bg');
+    if(kbAnim){ kbAnim.kill(); kbAnim=null; }
+    gsap.set('#photo-portal', {opacity:0, pointerEvents:'none'});
+    gsap.set('#portal-overlay', {backgroundColor:'rgba(0,0,0,0)'});
+    scene = 'tl';
+    cinema(false);
+    buildTimeline();
+    document.getElementById('sc-tl').style.pointerEvents='auto';
+    document.getElementById('btn-save').style.display='flex';
+    saveToCloud();
     return;
   }
-  photos.splice(curIdx,1);
-  if(photos.length === 0){
-    goTimeline();
-  } else {
-    const nextIdx = Math.min(curIdx, photos.length-1);
-    buildTimeline();
-    crossFade(nextIdx);
-  }
-  saveToCloud();  // ← cloud sync
+
+  // Move to next photo (or last if we deleted the last one)
+  const nextIdx = Math.min(curIdx, photos.length - 1);
+  curIdx = nextIdx;
+
+  // Update photo content directly (no portal animation)
+  const p = photos[curIdx];
+  document.getElementById('photo-bg').style.backgroundImage = `url('${p.src}')`;
+  document.getElementById('ph-year').textContent  = p.year;
+  document.getElementById('ph-title').textContent = p.caption;
+  document.getElementById('ph-sub').textContent   = p.sublabel;
+  updateBar();
+  updateCounter(curIdx);
+
+  // Rebuild timeline in background
+  buildTimeline();
+  saveToCloud();
 }
 
 // ── SAVE HTML ─────────────────────────────────
